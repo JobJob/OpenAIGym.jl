@@ -19,7 +19,7 @@ const _py_envs = Dict{String,Any}()
 
 # --------------------------------------------------------------
 
-abstract AbstractGymEnv <: AbstractEnvironment
+abstract type AbstractGymEnv <: AbstractEnvironment end
 
 "A simple wrapper around the OpenAI gym environments to add to the Reinforce framework"
 type GymEnv <: AbstractGymEnv
@@ -92,7 +92,8 @@ end
 
 # --------------------------------------------------------------
 
-render(env::AbstractGymEnv, args...) = env.pyenv[:render]()
+render(env::AbstractGymEnv, args...; kwargs...) =
+    pycall(env.pyenv[:render], PyAny; kwargs...)
 
 # --------------------------------------------------------------
 
@@ -148,16 +149,21 @@ function Reinforce.step!(env::GymEnv, s, a)
     # info("Going to take action: $a")
     pyact = pyaction(a)
     s′, r, env.done, env.info = env.pyenv[:step](pyact)
-    env.reward, env.state = r, s′
+    env.reward += r
+    env.state = s′
+    r, s′
 end
 
 function Reinforce.step!(env::UniverseEnv, s, a)
     info("Going to take action: $a")
     pyact = Any[pyaction(a)]
     s′, r, env.done, env.info = env.pyenv[:step](pyact)
-    env.reward, env.state = r, s′
+    env.reward += r
+    env.state = s′
+    r, s′
 end
 
+Reinforce.finished(env::GymEnv) = env.done
 Reinforce.finished(env::GymEnv, s′) = env.done
 Reinforce.finished(env::UniverseEnv, s′) = all(env.done)
 
@@ -175,12 +181,12 @@ end
 
 
 function __init__()
-    @static if is_linux()
-        # due to a ssl library bug, I have to first load the ssl lib here
-        condadir = Pkg.dir("Conda","deps","usr","lib")
-        Libdl.dlopen(joinpath(condadir, "libssl.so"))
-        Libdl.dlopen(joinpath(condadir, "python2.7", "lib-dynload", "_ssl.so"))
-    end
+    # @static if is_linux()
+    #     # due to a ssl library bug, I have to first load the ssl lib here
+    #     condadir = Pkg.dir("Conda","deps","usr","lib")
+    #     Libdl.dlopen(joinpath(condadir, "libssl.so"))
+    #     Libdl.dlopen(joinpath(condadir, "python2.7", "lib-dynload", "_ssl.so"))
+    # end
 
     global const pygym = pyimport("gym")
 end
