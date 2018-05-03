@@ -13,6 +13,7 @@ import Reinforce:
 export
     gym,
     GymEnv,
+    render,
     test_env
 
 const _py_envs = Dict{String,Any}()
@@ -24,23 +25,33 @@ abstract type AbstractGymEnv <: AbstractEnvironment end
 "A simple wrapper around the OpenAI gym environments to add to the Reinforce framework"
 type GymEnv <: AbstractGymEnv
     name::String
-    pyenv  # the python "env" object
-    state
+    pyenv::PyObject   # the python "env" object
+    pystep::PyObject  # the python env.step function
+    pyreset::PyObject # the python env.reset function
+    pystate::PyObject # the state array object referenced by the PyArray state.o
+    info::PyObject    # store it as a PyObject for speed
+    state::PyArray
     reward::Float64
     total_reward::Float64
     actions::AbstractSet
     done::Bool
-    info::Dict
-    GymEnv(name,pyenv) = new(name,pyenv)
+    function GymEnv(name, pyenv)
+        env = new(name, pyenv, pyenv["step"], pyenv["reset"], PyNULL(), PyNULL())
+        env.state = pycall(env.pyreset, PyArray) # initialise env.state
+        reset!(env, true)
+        env
+    end
 end
 GymEnv(name) = gym(name)
 
-function Reinforce.reset!(env::GymEnv)
-    env.state = env.pyenv[:reset]()
+function Reinforce.reset!(env::GymEnv, reset_actions::Bool = false)
+    setdata!(env.state, pycall!(env.pystate, env.pyreset, PyObject))
+    # pycall!(env.pystate, env.pyreset, PyObject)
     env.reward = 0.0
     env.total_reward = 0.0
-    env.actions = actions(env, nothing)
+    reset_actions && (env.actions = actions(env, nothing))
     env.done = false
+    env.state
 end
 
 "A simple wrapper around the OpenAI gym environments to add to the Reinforce framework"
@@ -89,7 +100,6 @@ function gym(name::AbstractString)
     else
         GymEnv(name, pygym[:make](name))
     end
-    reset!(env)
     env
 end
 
@@ -141,7 +151,7 @@ end
 
 
 function Reinforce.actions(env::AbstractGymEnv, s′)
-    actionset(env.pyenv[:action_space])
+    actionset(env.pyenv["action_space"])
 end
 
 pyaction(a::Vector) = Any[pyaction(ai) for ai=a]
@@ -149,14 +159,21 @@ pyaction(a::KeyboardAction) = Any[a.key]
 pyaction(a::MouseAction) = Any[vnc_event.PointerEvent(a.x, a.y, a.button)]
 pyaction(a) = a
 
+const pytplres = PyNULL()
+const pystepres = PyNULL()
+const pybufinfo = PyBuffer()
 function Reinforce.step!(env::GymEnv, s, a)
-    # info("Going to take action: $a")
     pyact = pyaction(a)
-    s′, r, env.done, env.info = env.pyenv[:step](pyact)
-    env.reward = r
+    pycall!(pystepres, env.pystep, PyObject, pyact)
+
+    unsafe_gettpl!(env.pystate, pystepres, PyObject, 0)
+    setdata!(env.state, env.pystate, pybufinfo)
+
+    r = unsafe_gettpl!(pytplres, pystepres, Float64, 1)
+    env.done = unsafe_gettpl!(pytplres, pystepres, Bool, 2)
+    unsafe_gettpl!(env.info, pystepres, PyObject, 3)
     env.total_reward += r
-    env.state = s′
-    r, s′
+    r, env.state
 end
 
 function Reinforce.step!(env::UniverseEnv, s, a)
