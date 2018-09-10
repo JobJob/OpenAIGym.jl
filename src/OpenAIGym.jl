@@ -23,39 +23,52 @@ const _py_envs = Dict{String,Any}()
 abstract type AbstractGymEnv <: AbstractEnvironment end
 
 "A simple wrapper around the OpenAI gym environments to add to the Reinforce framework"
-type GymEnv <: AbstractGymEnv
+mutable struct GymEnv{T} <: AbstractGymEnv
     name::String
     pyenv::PyObject   # the python "env" object
     pystep::PyObject  # the python env.step function
     pyreset::PyObject # the python env.reset function
     pystate::PyObject # the state array object referenced by the PyArray state.o
     info::PyObject    # store it as a PyObject for speed
-    state::PyArray
+    state::T
     reward::Float64
     total_reward::Float64
     actions::AbstractSet
     done::Bool
-    function GymEnv(name, pyenv)
-        env = new(name, pyenv, pyenv["step"], pyenv["reset"], PyNULL(), PyNULL())
-        env.state = pycall(env.pyreset, PyArray) # initialise env.state
-        reset!(env, true)
+    function GymEnv(name, pyenv, pyarray_state)
+        state_type = pyarray_state ? PyArray : PyAny
+        state = pycall(pyenv["reset"], state_type) # initialise env.state
+        env = new{typeof(state)}(name, pyenv, pyenv["step"], pyenv["reset"], PyNULL(), PyNULL(), state)
+        reset!(env)
         env
     end
 end
-GymEnv(name) = gym(name)
+GymEnv(name; pyarray_state=false) = gym(name; pyarray_state=pyarray_state)
 
-function Reinforce.reset!(env::GymEnv, reset_actions::Bool = false)
-    setdata!(env.state, pycall!(env.pystate, env.pyreset, PyObject))
-    # pycall!(env.pystate, env.pyreset, PyObject)
+function gymreset!(env::GymEnv{T}) where T
     env.reward = 0.0
     env.total_reward = 0.0
-    reset_actions && (env.actions = actions(env, nothing))
+    env.actions = actions(env, nothing)
     env.done = false
-    env.state
+    return env.state
+end
+
+function Reinforce.reset!(env::GymEnv{T}) where T <: PyArray
+    setdata!(env.state, pycall!(env.pystate, env.pyreset, PyObject))
+    return gymreset!(env)
+end
+
+"""
+Non PyArray state types
+"""
+function Reinforce.reset!(env::GymEnv{T}) where T
+    pycall!(env.pystate, env.pyreset, PyObject)
+    env.state = convert(T, env.pystate)
+    return gymreset!(env)
 end
 
 "A simple wrapper around the OpenAI gym environments to add to the Reinforce framework"
-type UniverseEnv <: AbstractGymEnv
+mutable struct UniverseEnv <: AbstractGymEnv
     name::String
     pyenv  # the python "env" object
     state
@@ -76,29 +89,31 @@ function Reinforce.reset!(env::UniverseEnv)
     env.done = [false]
 end
 
-function gym(name::AbstractString)
-    env = if name in ("Soccer-v0", "SoccerEmptyGoal-v0")
-        @pyimport gym_soccer
+function gym(name::AbstractString; pyarray_state=false)
+    env =
+    if name in ("Soccer-v0", "SoccerEmptyGoal-v0")
+        global gym_soccer = pyimport("gym_soccer") # see https://github.com/JuliaPy/PyCall.jl/issues/541
         get!(_py_envs, name) do
             GymEnv(name, pygym[:make](name))
         end
-    elseif split(name, ".")[1] in ("flashgames", "wob")
-        @pyimport universe
-        @pyimport universe.wrappers as wrappers
-        if !isdefined(OpenAIGym, :vnc_event)
-            global const vnc_event = PyCall.pywrap(PyCall.pyimport("universe.spaces.vnc_event"))
-        end
-        get!(_py_envs, name) do
-            pyenv = wrappers.SafeActionSpace(pygym[:make](name))
-            pyenv[:configure](remotes=1)  # automatically creates a local docker container
-            # pyenv[:configure](remotes="vnc://localhost:5900+15900")
-            o = UniverseEnv(name, pyenv)
-            # finalizer(o,  o.pyenv[:close]())
-            sleep(2)
-            o
-        end
+    # elseif split(name, ".")[1] in ("flashgames", "wob")
+    #     global universe
+    #     @pyimport universe
+    #     @pyimport universe.wrappers as wrappers
+    #     if !isdefined(OpenAIGym, :vnc_event)
+    #         global const vnc_event = PyCall.pywrap(PyCall.pyimport("universe.spaces.vnc_event"))
+    #     end
+    #     get!(_py_envs, name) do
+    #         pyenv = wrappers.SafeActionSpace(pygym[:make](name))
+    #         pyenv[:configure](remotes=1)  # automatically creates a local docker container
+    #         # pyenv[:configure](remotes="vnc://localhost:5900+15900")
+    #         o = UniverseEnv(name, pyenv)
+    #         # finalizer(o,  o.pyenv[:close]())
+    #         sleep(2)
+    #         o
+    #     end
     else
-        GymEnv(name, pygym[:make](name))
+        GymEnv(name, pygym[:make](name), pyarray_state)
     end
     env
 end
@@ -161,19 +176,72 @@ pyaction(a) = a
 
 const pytplres = PyNULL()
 const pystepres = PyNULL()
+const pyargsptr = PyNULL()
+const pyacto = PyNULL()
 const pybufinfo = PyBuffer()
-function Reinforce.step!(env::GymEnv, s, a)
+
+using PyCall: @pycheckn, @pycheckz, pydecref_, __pycall!
+import PyCall: pysetarg!
+
+function PyObject!(pyo, i::Integer)
+    pydecref_(pyo.o)
+    # pyo.o = @pycheckn ccall(@pysym(:PyLong_FromLongLong), PyPtr, (Clonglong,), i)
+    pyo.o = ccall(@pysym(:PyLong_FromLongLong), PyPtr, (Clonglong,), i)
+    pyo
+end
+
+function pysetarg!(pyargsptr, pyarg::Union{PyPtr, PyObject}, i::Int)
+    pyincref(pyarg) # PyTuple_SetItem steals the reference
+    # @pycheckz ccall((@pysym :PyTuple_SetItem), Cint,
+    ccall((@pysym :PyTuple_SetItem), Cint,
+                        (PyPtr,Int,PyPtr), pyargsptr, i-1, pyarg)
+end
+
+timestuff = false
+
+macro timeit2(exprs...)
+    if timestuff
+        return :(@timeit($(esc.(exprs)...)))
+    else
+        return esc(exprs[end])
+    end
+end
+
+# @inline function Reinforce.step!(env::GymEnv{T}, a) where T <: PyArray
+@inline function Reinforce.step!(env::GymEnv{T}, a) where T <: PyArray
     pyact = pyaction(a)
+    # pyargsptr.o = @pycheckn ccall((@pysym :PyTuple_New), PyPtr, (Int,), 1)
+    # pyargsptr.o = ccall((@pysym :PyTuple_New), PyPtr, (Int,), 1)
+    # pysetarg!(pyargsptr, PyObject!(pyacto, pyact), 1)
+    # __pycall!(pystepres, pyargsptr.o, env.pystep.o, C_NULL)
     pycall!(pystepres, env.pystep, PyObject, pyact)
 
     unsafe_gettpl!(env.pystate, pystepres, PyObject, 0)
-    setdata!(env.state, env.pystate, pybufinfo)
+    setdata!(env.state, env.pystate)
 
+    return gymstep!(env, pystepres)
+    # pydecref(pyargsptr);
+    # return env.state
+end
+
+"""
+step! for non-PyArray state
+"""
+function Reinforce.step!(env::GymEnv{T}, a) where T
+    pyact = pyaction(a)
+    pycall!(pystepres, env.pystep, PyObject, pyact)
+    unsafe_gettpl!(env.pystate, pystepres, PyObject, 0)
+    env.state = convert(T, env.pystate)
+
+    return gymstep!(env, pystepres)
+end
+
+@inline function gymstep!(env, pystepres)
     r = unsafe_gettpl!(pytplres, pystepres, Float64, 1)
     env.done = unsafe_gettpl!(pytplres, pystepres, Bool, 2)
     unsafe_gettpl!(env.info, pystepres, PyObject, 3)
     env.total_reward += r
-    r, env.state
+    return (r, env.state)
 end
 
 function Reinforce.step!(env::UniverseEnv, s, a)
@@ -203,6 +271,7 @@ function test_env(name::String = "CartPole-v0")
 end
 
 
+global const pygym = PyNULL()
 
 function __init__()
     # @static if is_linux()
@@ -212,7 +281,7 @@ function __init__()
     #     Libdl.dlopen(joinpath(condadir, "python2.7", "lib-dynload", "_ssl.so"))
     # end
 
-    global const pygym = pyimport("gym")
+    pygym.o = pyimport("gym").o
 end
 
 end # module
