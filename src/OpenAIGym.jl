@@ -29,21 +29,21 @@ mutable struct GymEnv{T} <: AbstractGymEnv
     pystep::PyObject  # the python env.step function
     pyreset::PyObject # the python env.reset function
     pystate::PyObject # the state array object referenced by the PyArray state.o
-    info::PyObject    # store it as a PyObject for speed
+    info::PyObject    # store it as a PyObject for speed, since often unused
     state::T
     reward::Float64
     total_reward::Float64
     actions::AbstractSet
     done::Bool
-    function GymEnv(name, pyenv, pyarray_state)
-        state_type = pyarray_state ? PyArray : PyAny
-        state = pycall(pyenv["reset"], state_type) # initialise env.state
-        env = new{typeof(state)}(name, pyenv, pyenv["step"], pyenv["reset"], PyNULL(), PyNULL(), state)
+    function GymEnv(name, pyenv, stateT=PyArray)
+        pystate = pycall(pyenv["reset"], PyObject)
+        state = convert(stateT, pystate)
+        env = new{typeof(state)}(name, pyenv, pyenv["step"], pyenv["reset"], pystate, PyNULL(), state)
         reset!(env)
         env
     end
 end
-GymEnv(name; pyarray_state=false) = gym(name; pyarray_state=pyarray_state)
+GymEnv(name; stateT=PyArray) = gym(name; stateT=stateT)
 
 function gymreset!(env::GymEnv{T}) where T
     env.reward = 0.0
@@ -89,12 +89,12 @@ function Reinforce.reset!(env::UniverseEnv)
     env.done = [false]
 end
 
-function gym(name::AbstractString; pyarray_state=false)
+function gym(name::AbstractString; stateT=PyArray)
     env =
     if name in ("Soccer-v0", "SoccerEmptyGoal-v0")
         global gym_soccer = pyimport("gym_soccer") # see https://github.com/JuliaPy/PyCall.jl/issues/541
         get!(_py_envs, name) do
-            GymEnv(name, pygym[:make](name))
+            GymEnv(name, pygym[:make](name), stateT)
         end
     # elseif split(name, ".")[1] in ("flashgames", "wob")
     #     global universe
@@ -113,7 +113,7 @@ function gym(name::AbstractString; pyarray_state=false)
     #         o
     #     end
     else
-        GymEnv(name, pygym[:make](name), pyarray_state)
+        GymEnv(name, pygym[:make](name), stateT)
     end
     env
 end
@@ -169,7 +169,7 @@ function Reinforce.actions(env::AbstractGymEnv, s′)
     actionset(env.pyenv["action_space"])
 end
 
-pyaction(a::Vector) = Any[pyaction(ai) for ai=a]
+pyaction(a::Vector) = [pyaction(ai) for ai=a]
 pyaction(a::KeyboardAction) = Any[a.key]
 pyaction(a::MouseAction) = Any[vnc_event.PointerEvent(a.x, a.y, a.button)]
 pyaction(a) = a
@@ -180,35 +180,25 @@ const pyargsptr = PyNULL()
 const pyacto = PyNULL()
 const pybufinfo = PyBuffer()
 
-using PyCall: @pycheckn, @pycheckz, pydecref_, __pycall!
-import PyCall: pysetarg!
+# using PyCall: @pycheckn, @pycheckz, pydecref_, __pycall!
+# import PyCall: pysetarg!
 
-function PyObject!(pyo, i::Integer)
-    pydecref_(pyo.o)
-    # pyo.o = @pycheckn ccall(@pysym(:PyLong_FromLongLong), PyPtr, (Clonglong,), i)
-    pyo.o = ccall(@pysym(:PyLong_FromLongLong), PyPtr, (Clonglong,), i)
-    pyo
-end
-
-function pysetarg!(pyargsptr, pyarg::Union{PyPtr, PyObject}, i::Int)
-    pyincref(pyarg) # PyTuple_SetItem steals the reference
-    # @pycheckz ccall((@pysym :PyTuple_SetItem), Cint,
-    ccall((@pysym :PyTuple_SetItem), Cint,
-                        (PyPtr,Int,PyPtr), pyargsptr, i-1, pyarg)
-end
-
-timestuff = false
-
-macro timeit2(exprs...)
-    if timestuff
-        return :(@timeit($(esc.(exprs)...)))
-    else
-        return esc(exprs[end])
-    end
-end
+# function PyObject!(pyo, i::Integer)
+#     pydecref_(pyo.o)
+#     # pyo.o = @pycheckn ccall(@pysym(:PyLong_FromLongLong), PyPtr, (Clonglong,), i)
+#     pyo.o = ccall(@pysym(:PyLong_FromLongLong), PyPtr, (Clonglong,), i)
+#     pyo
+# end
+#
+# function pysetarg!(pyargsptr, pyarg::Union{PyPtr, PyObject}, i::Int)
+#     pyincref(pyarg) # PyTuple_SetItem steals the reference
+#     # @pycheckz ccall((@pysym :PyTuple_SetItem), Cint,
+#     ccall((@pysym :PyTuple_SetItem), Cint,
+#                         (PyPtr,Int,PyPtr), pyargsptr, i-1, pyarg)
+# end
 
 # @inline function Reinforce.step!(env::GymEnv{T}, a) where T <: PyArray
-@inline function Reinforce.step!(env::GymEnv{T}, a) where T <: PyArray
+function Reinforce.step!(env::GymEnv{T}, a) where T <: PyArray
     pyact = pyaction(a)
     # pyargsptr.o = @pycheckn ccall((@pysym :PyTuple_New), PyPtr, (Int,), 1)
     # pyargsptr.o = ccall((@pysym :PyTuple_New), PyPtr, (Int,), 1)
