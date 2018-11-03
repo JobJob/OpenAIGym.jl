@@ -6,8 +6,8 @@ export
     step!,
     reset!,
     finished,
+    rand_action,
     render,
-    actions,
     PyAny
 
 
@@ -28,7 +28,7 @@ mutable struct GymEnv{T}
     state::T
     reward::Float64
     total_reward::Float64
-    actions::AbstractSet
+    actions::PyObject
     done::Bool
     function GymEnv{T}(name, pyenv, pystate, state::T) where T
         env = new{T}(name, pyenv, pyenv["step"], pyenv["reset"],
@@ -65,40 +65,6 @@ render(env::GymEnv, args...; kwargs...) =
 
 # --------------------------------------------------------------
 
-
-function actionset(A::PyObject)
-    if haskey(A, :n)
-        # choose from n actions
-        Set(0:(A[:n]-1))
-    elseif haskey(A, :spaces)
-        # a tuple of action sets
-        sets = [actionset(a) for a in A[:spaces]]
-        Set(sets...)
-    elseif haskey(A, :high)
-        # continuous interval
-        Set((A[:low], A[:high]))
-        # if A[:shape] == (1,)  # for now we only support 1-length vectors
-        #     IntervalSet{Float64}(A[:low][1], A[:high][1])
-        # else
-        #     # @show A[:shape]
-        #     lo,hi = A[:low], A[:high]
-        #     # error("Unsupported shape for IntervalSet: $(A[:shape])")
-        #     [IntervalSet{Float64}(lo[i], hi[i]) for i=1:length(lo)]
-        # end
-    elseif haskey(A, :actions)
-        # Hardcoded
-        A[:actions]
-    else
-        @show A
-        @show keys(A)
-        error("Unknown actionset type: $A")
-    end
-end
-
-function actions(env::GymEnv, s′)
-    actionset(env.pyenv[:action_space])
-end
-
 pyaction(a::Vector) = Any[pyaction(ai) for ai=a]
 pyaction(a) = a
 
@@ -122,7 +88,7 @@ end
 function gymreset!(env::GymEnv{T}) where T
     env.reward = 0.0
     env.total_reward = 0.0
-    env.actions = actions(env, nothing)
+    env.actions = env.pyenv["action_space"]
     env.done = false
     return env.state
 end
@@ -163,6 +129,8 @@ end
 
 finished(env::GymEnv) = env.done
 finished(env::GymEnv, s′) = env.done
+
+rand_action(env::GymEnv) = env.actions["sample"]()
 
 # --------------------------------------------------------------
 

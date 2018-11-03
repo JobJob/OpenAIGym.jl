@@ -29,7 +29,7 @@ function epstep(env::GymEnv)
     steps = 0
     while true
         steps += 1
-        r, s′ = step!(env, rand(env.actions))
+        r, s′ = step!(env, rand_action(env))
         finished(env, s′) && break
     end
     steps
@@ -53,7 +53,7 @@ end
         # check they all work - no errors == no worries
         println("------------------------------ Check envs load ------------------------------")
         for (i, env) in enumerate(envs)
-            a = rand(env.actions) |> OpenAIGym.pyaction
+            a = rand_action(env) |> OpenAIGym.pyaction
             action_type = a |> PyObject |> pytypeof
             println("env.pyenv: $(env.pyenv) action_type: $action_type (e.g. $a)")
             time_steps(env, 1)
