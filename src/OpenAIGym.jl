@@ -1,26 +1,22 @@
 module OpenAIGym
 
 using PyCall
-using Reexport
-@reexport using Reinforce
-import Reinforce:
-    MouseAction, MouseActionSet,
-    KeyboardAction, KeyboardActionSet
-
 export
-    pygym,
     GymEnv,
-    test_env,
+    step!,
+    reset!,
+    finished,
+    render,
+    actions,
     PyAny
+
 
 const _py_envs = Dict{String,Any}()
 
 # --------------------------------------------------------------
 
-abstract type AbstractGymEnv <: AbstractEnvironment end
-
-"A simple wrapper around the OpenAI gym environments to add to the Reinforce framework"
-mutable struct GymEnv{T} <: AbstractGymEnv
+"A wrapper around the Python OpenAI gym environments"
+mutable struct GymEnv{T}
     name::String
     pyenv::PyObject   # the python "env" object
     pystep::PyObject  # the python env.step function
@@ -64,7 +60,7 @@ end
 
 # --------------------------------------------------------------
 
-render(env::AbstractGymEnv, args...; kwargs...) =
+render(env::GymEnv, args...; kwargs...) =
     pycall(env.pyenv[:render], PyAny; kwargs...)
 
 # --------------------------------------------------------------
@@ -73,14 +69,14 @@ render(env::AbstractGymEnv, args...; kwargs...) =
 function actionset(A::PyObject)
     if haskey(A, :n)
         # choose from n actions
-        DiscreteSet(0:A[:n]-1)
+        Set(0:(A[:n]-1))
     elseif haskey(A, :spaces)
         # a tuple of action sets
         sets = [actionset(a) for a in A[:spaces]]
-        TupleSet(sets...)
+        Set(sets...)
     elseif haskey(A, :high)
         # continuous interval
-        IntervalSet{Vector{Float64}}(A[:low], A[:high])
+        Set((A[:low], A[:high]))
         # if A[:shape] == (1,)  # for now we only support 1-length vectors
         #     IntervalSet{Float64}(A[:low][1], A[:high][1])
         # else
@@ -91,7 +87,7 @@ function actionset(A::PyObject)
         # end
     elseif haskey(A, :actions)
         # Hardcoded
-        TupleSet(DiscreteSet(A[:actions]))
+        A[:actions]
     else
         @show A
         @show keys(A)
@@ -99,7 +95,7 @@ function actionset(A::PyObject)
     end
 end
 
-function Reinforce.actions(env::AbstractGymEnv, s′)
+function actions(env::GymEnv, s′)
     actionset(env.pyenv[:action_space])
 end
 
@@ -109,7 +105,7 @@ pyaction(a) = a
 """
 `reset!` for PyArray state types
 """
-function Reinforce.reset!(env::GymEnv{T}) where T <: PyArray
+function reset!(env::GymEnv{T}) where T <: PyArray
     setdata!(env.state, pycall!(env.pystate, env.pyreset, PyObject))
     return gymreset!(env)
 end
@@ -117,7 +113,7 @@ end
 """
 `reset!` for non PyArray state types
 """
-function Reinforce.reset!(env::GymEnv{T}) where T
+function reset!(env::GymEnv{T}) where T
     pycall!(env.pystate, env.pyreset, PyObject)
     env.state = convert(T, env.pystate)
     return gymreset!(env)
@@ -134,7 +130,7 @@ end
 """
 `step!` for PyArray state
 """
-function Reinforce.step!(env::GymEnv{T}, a) where T <: PyArray
+function step!(env::GymEnv{T}, a) where T <: PyArray
     pyact = pyaction(a)
     pycall!(env.pystepres, env.pystep, PyObject, pyact)
 
@@ -147,7 +143,7 @@ end
 """
 step! for non-PyArray state
 """
-function Reinforce.step!(env::GymEnv{T}, a) where T
+function step!(env::GymEnv{T}, a) where T
     pyact = pyaction(a)
     pycall!(env.pystepres, env.pystep, PyObject, pyact)
 
@@ -165,8 +161,8 @@ end
     return (r, env.state)
 end
 
-Reinforce.finished(env::GymEnv) = env.done
-Reinforce.finished(env::GymEnv, s′) = env.done
+finished(env::GymEnv) = env.done
+finished(env::GymEnv, s′) = env.done
 
 # --------------------------------------------------------------
 
