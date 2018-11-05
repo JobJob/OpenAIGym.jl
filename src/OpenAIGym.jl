@@ -1,6 +1,7 @@
 module OpenAIGym
 
 using PyCall
+using PyCall: setdata!
 export
     GymEnv,
     step!,
