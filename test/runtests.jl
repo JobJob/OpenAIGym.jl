@@ -42,10 +42,11 @@ end
     pacman = GymEnv("MsPacman-v4")
     pacmannf = GymEnv("MsPacmanNoFrameskip-v4")
     cartpole = GymEnv("CartPole-v0")
+    bipedal = GymEnv("BipedalWalker-v2")
     bj = GymEnv("Blackjack-v0", stateT=PyAny)
 
-    allenvs = [pong, pongnf, pacman, pacmannf, cartpole, bj]
-    eps2trial = Dict(pong=>2, pongnf=>1, pacman=>2, pacmannf=>1, cartpole=>400, bj=>30000)
+    allenvs = [pong, pongnf, pacman, pacmannf, cartpole, bipedal, bj]
+    eps2trial = Dict(pong=>2, pongnf=>1, pacman=>2, pacmannf=>1, bipedal=>10, cartpole=>400, bj=>30000)
     atarienvs = [pong, pongnf, pacman, pacmannf]
     envs = allenvs
 
@@ -85,10 +86,11 @@ end
         pacman = gym.make("MsPacman-v4");
         pacmannf = gym.make("MsPacmanNoFrameskip-v4");
         cartpole = gym.make("CartPole-v0")
+        bipedal = gym.make("BipedalWalker-v2")
         bj = gym.make("Blackjack-v0")
 
-        allenvs = [pong, pongnf, pacman, pacmannf, cartpole, bj]
-        eps2trial = {pong: 2, pongnf: 1, pacman: 2, pacmannf: 1, cartpole: 400, bj: 30000}
+        allenvs = [pong, pongnf, pacman, pacmannf, cartpole, bipedal, bj]
+        eps2trial = {pong: 2, pongnf: 1, pacman: 2, pacmannf: 1, cartpole: 400, bipedal: 10, bj: 30000}
         atarienvs = [pong, pongnf, pacman, pacmannf];
 
         envs = allenvs
