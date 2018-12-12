@@ -66,7 +66,7 @@ render(env::GymEnv, args...; kwargs...) =
 
 # --------------------------------------------------------------
 
-pyaction(a::Vector) = Any[pyaction(ai) for ai=a]
+# pyaction(a::Vector) = Any[pyaction(ai) for ai=a]
 pyaction(a) = a
 
 """
